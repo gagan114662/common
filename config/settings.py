@@ -55,21 +55,98 @@ class EvolutionConfig:
     selection_pressure: float = 2.0
     elitism_rate: float = 0.1
     
-# Multi-agent configuration
+# Agent-specific settings
+
 @dataclass
-class AgentConfig:
-    """Multi-agent system configuration"""
-    agents: List[str] = field(default_factory=lambda: [
-        "supervisor",
-        "trend_following", 
-        "mean_reversion",
-        "momentum",
-        "arbitrage",
-        "market_neutral"
-    ])
-    max_concurrent_agents: int = 6
-    communication_timeout: int = 10
-    
+class TrendFollowingAgentSettings:
+    name: str = "TrendFollowingAgent"
+    category: str = "trend_following"
+    initial_symbols_watchlist: List[str] = field(default_factory=lambda: ["SPY", "QQQ", "AAPL"])
+    data_fetch_period: str = "1y"
+    sma_short_window: int = 20
+    sma_long_window: int = 50
+    trend_strength_threshold: float = 0.05
+    min_data_points_for_trend: int = 60
+    run_cycle_interval_seconds: int = 3600
+    max_concurrent_tasks: int = 3 # Copied from base_agent.AgentConfig default for now
+    generation_batch_size: int = 0 # Default as TFA is not generating strategies in this version
+    min_sharpe_threshold: float = 0.0
+    min_cagr_threshold: float = 0.0
+    risk_tolerance: float = 0.5
+    exploration_rate: float = 0.0
+    communication_frequency: int = 60
+
+@dataclass
+class MeanReversionAgentSettings:
+    name: str = "MeanReversionAgent"
+    category: str = "mean_reversion" # Added category for consistency with BaseAgent.config
+    version: str = "1.0" # From test
+    description: str = "Mean Reversion Agent" # From test
+    initial_symbols_watchlist: List[str] = field(default_factory=lambda: ["MSFT", "GOOG"]) # Default example
+    data_fetch_period: str = "60d"
+    bollinger_window: int = 20
+    bollinger_std_dev: float = 2.0
+    rsi_period: int = 14
+    rsi_oversold: int = 30
+    rsi_overbought: int = 70
+    min_volume_threshold: int = 100000
+    opportunity_score_threshold: float = 0.6
+    run_cycle_interval_seconds: int = 3600 # Added for consistency
+    # BaseAgent config fields that might be part of its specific config section
+    max_concurrent_tasks: int = 3
+    generation_batch_size: int = 0
+    min_sharpe_threshold: float = 0.0
+    min_cagr_threshold: float = 0.0
+    risk_tolerance: float = 0.5
+    exploration_rate: float = 0.0
+    communication_frequency: int = 60
+
+
+# Container for all agent-specific configurations
+@dataclass
+class AgentConfigs:
+    trend_following: TrendFollowingAgentSettings = field(default_factory=TrendFollowingAgentSettings)
+    mean_reversion: MeanReversionAgentSettings = field(default_factory=MeanReversionAgentSettings)
+    research_hypothesis: "ResearchAgentSettings" = field(default_factory=lambda: ResearchAgentSettings()) # Added
+    # Add other agents as needed:
+    # supervisor: SupervisorAgentSettings = field(default_factory=SupervisorAgentSettings) # Example
+    # momentum: MomentumAgentSettings = field(default_factory=MomentumAgentSettings)
+    # arbitrage: ArbitrageAgentSettings = field(default_factory=ArbitrageAgentSettings)
+    # market_neutral: MarketNeutralAgentSettings = field(default_factory=MarketNeutralAgentSettings)
+
+@dataclass
+class ResearchAgentSettings:
+    name: str = "ResearchHypothesisAgent"
+    category: str = "research" # For BaseAgent config
+    version: str = "1.0"
+    description: str = "Generates and validates research hypotheses."
+    research_interval_hours: int = 6
+    max_active_hypotheses: int = 10
+    min_confidence_threshold: float = 0.65
+    firecrawl_api_key: Optional[str] = os.getenv("FIRECRAWL_API_KEY") # For actual client
+    firecrawl_max_pages: int = 5 # For scraping depth
+    reasoning_model_provider: str = "openai" # e.g., "openai", "gemini"
+    reasoning_model_name: str = "gpt-4-turbo"
+    # BaseAgent config fields
+    max_concurrent_tasks: int = 2
+    generation_batch_size: int = 0
+    min_sharpe_threshold: float = 0.0
+    min_cagr_threshold: float = 0.0
+    risk_tolerance: float = 0.5
+    exploration_rate: float = 0.0
+    communication_frequency: int = 300
+
+
+# Global agent system settings (if any are left that are not per-agent type)
+@dataclass
+class GlobalAgentSystemSettings:
+    """Global settings for the multi-agent system if needed"""
+    # Example: maybe max_total_concurrent_agents_across_system: int = 20
+    # For now, the old AgentConfig fields are moved into individual agent settings or are general enough.
+    # The list of agent *names* that was in the old AgentConfig might be derived from AgentConfigs keys.
+    max_concurrent_agents: int = 6 # This was in old AgentConfig, maybe it's a global cap?
+    communication_timeout: int = 10 # This was in old AgentConfig
+
 # Backtesting configuration
 @dataclass
 class BacktestConfig:
@@ -123,7 +200,8 @@ class SystemConfig:
     performance: PerformanceTargets = field(default_factory=PerformanceTargets)
     requirements: SystemRequirements = field(default_factory=SystemRequirements)
     evolution: EvolutionConfig = field(default_factory=EvolutionConfig)
-    agents: AgentConfig = field(default_factory=AgentConfig)
+    agents: AgentConfigs = field(default_factory=AgentConfigs) # Changed here
+    global_agent_settings: GlobalAgentSystemSettings = field(default_factory=GlobalAgentSystemSettings) # Added
     backtest: BacktestConfig = field(default_factory=BacktestConfig)
     data: DataConfig = field(default_factory=DataConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)

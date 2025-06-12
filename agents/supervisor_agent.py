@@ -18,7 +18,7 @@ from tier1_core.performance_monitor import PerformanceMonitor
 from tier2_strategy.strategy_generator import StrategyGenerator, GeneratedStrategy
 from tier2_strategy.strategy_tester import StrategyTester, StrategyPerformance
 from tier3_evolution.evolution_engine import EvolutionEngine
-from config.settings import AgentConfig as SystemAgentConfig, PerformanceTargets
+from config.settings import AgentConfigs as SystemAgentConfig, PerformanceTargets # Changed AgentConfig to AgentConfigs
 
 @dataclass
 class AgentPerformanceProfile:
@@ -79,6 +79,9 @@ class SupervisorAgent(BaseAgent):
         )
         
         super().__init__(config, strategy_generator, strategy_tester, knowledge_base)
+
+        self.strategy_generator = strategy_generator # Added assignment
+        self.strategy_tester = strategy_tester # Added assignment
         
         self.evolution_engine = evolution_engine
         self.performance_monitor = performance_monitor
@@ -115,13 +118,23 @@ class SupervisorAgent(BaseAgent):
         self.logger.info("Supervisor agent initializing...")
         
         # Initialize agent profiles
-        for agent_name in self.system_agent_config.agents:
+        # self.system_agent_config is now an instance of AgentConfigs
+        # We can get agent names by iterating through its fields (e.g., trend_following, mean_reversion)
+
+        # Get agent setting objects from AgentConfigs
+        agent_setting_objects = [getattr(self.system_agent_config, field_name) for field_name in self.system_agent_config.__annotations__ if hasattr(self.system_agent_config, field_name)]
+        configured_agent_settings = [setting for setting in agent_setting_objects if hasattr(setting, 'name')] # Filter out non-agent settings if any
+
+        num_agents = len(configured_agent_settings)
+
+        for agent_setting in configured_agent_settings:
+            agent_name = agent_setting.name # Get name from the specific agent's settings
             self.agent_profiles[agent_name] = AgentPerformanceProfile(agent_name=agent_name)
             self.resource_allocations[agent_name] = ResourceAllocation(
                 agent_name=agent_name,
-                cpu_allocation=1.0 / len(self.system_agent_config.agents),
-                memory_allocation=1.0 / len(self.system_agent_config.agents),
-                strategy_quota=100 // len(self.system_agent_config.agents),
+                cpu_allocation=1.0 / num_agents if num_agents > 0 else 1.0,
+                memory_allocation=1.0 / num_agents if num_agents > 0 else 1.0,
+                strategy_quota=100 // num_agents if num_agents > 0 else 100,
                 priority=3
             )
         

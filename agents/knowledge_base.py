@@ -635,3 +635,52 @@ class SharedKnowledgeBase:
                 del self.insights_cache[insight_id]
         
         self.logger.info(f"Cleaned up {len(expired_insights)} expired insights")
+
+    # Methods required by test_knowledge_base_integration.py
+    def get_insights_by_type(self, insight_category: str, max_age_seconds: Optional[int] = None) -> List[MarketInsight]:
+        """
+        Retrieves insights of a specific category, optionally filtered by maximum age.
+        The test uses 'insight_type', which we map to 'category'.
+        """
+        results = []
+        with self.lock:
+            for insight in self.insights_cache.values():
+                if insight.category == insight_category:
+                    if max_age_seconds is not None:
+                        if datetime.now() - insight.timestamp > timedelta(seconds=max_age_seconds):
+                            continue # Skip if older than max_age_seconds
+                    if insight.is_valid(): # Also respect built-in validity period
+                        results.append(insight)
+        results.sort(key=lambda x: x.timestamp, reverse=True)
+        return results
+
+    def get_latest_insight_by_symbol_type(self, symbol: str, insight_category: str, max_age_seconds: Optional[int] = None) -> Optional[MarketInsight]:
+        """
+        Retrieves the latest insight for a specific symbol and category, optionally filtered by maximum age.
+        The test uses 'insight_type', which we map to 'category'.
+        """
+        latest_insight: Optional[MarketInsight] = None
+        with self.lock:
+            for insight in self.insights_cache.values():
+                if insight.category == insight_category and symbol in insight.symbols:
+                    if max_age_seconds is not None:
+                        if datetime.now() - insight.timestamp > timedelta(seconds=max_age_seconds):
+                            continue
+                    if insight.is_valid():
+                        if latest_insight is None or insight.timestamp > latest_insight.timestamp:
+                            latest_insight = insight
+        return latest_insight
+
+    def get_all_insights_for_symbol(self, symbol: str, max_age_seconds: Optional[int] = None) -> List[MarketInsight]:
+        """Retrieves all valid insights for a specific symbol, optionally filtered by maximum age."""
+        results = []
+        with self.lock:
+            for insight in self.insights_cache.values():
+                if symbol in insight.symbols:
+                    if max_age_seconds is not None:
+                        if datetime.now() - insight.timestamp > timedelta(seconds=max_age_seconds):
+                            continue
+                    if insight.is_valid():
+                         results.append(insight)
+        results.sort(key=lambda x: x.timestamp, reverse=True)
+        return results

@@ -14,11 +14,20 @@ from tier1_core.logger import get_logger, PERF_LOGGER
 from tier2_strategy.strategy_generator import StrategyGenerator, GeneratedStrategy
 from tier2_strategy.strategy_tester import StrategyTester, StrategyPerformance
 from agents.knowledge_base import SharedKnowledgeBase, MarketInsight, StrategyDiscovery, AgentMessage
+from tier1_core.real_time_dashboard import DASHBOARD # Moved import to top
+
+from typing import Dict, Any, Optional # Ensure Any, Dict are imported if not already
+from dataclasses import field # Ensure field is imported if not already for default_factory
 
 @dataclass
 class AgentState:
     """Agent operational state"""
     is_active: bool = False
+    status: str = "stopped"  # Added: e.g., stopped, initializing, running, error, idle
+    details: Dict[str, Any] = field(default_factory=dict)  # Added
+    last_error: str = "" # Added from original prompt's suggestion for state
+
+    # Existing fields from the file
     strategies_generated: int = 0
     strategies_tested: int = 0
     successful_strategies: int = 0
@@ -63,7 +72,14 @@ class BaseAgent(ABC):
         self.generator = strategy_generator
         self.tester = strategy_tester
         self.knowledge_base = knowledge_base
-        self.logger = get_logger(f"agent.{config.name}")
+        try:
+            self.logger = get_logger(f"agent.{config.name if hasattr(config, 'name') else 'Unknown'}")
+        except Exception as e:
+            print(f"!!! Logger initialization failed for agent.{config.name if hasattr(config, 'name') else 'Unknown'}: {e}") # Will show in test output
+            import logging
+            # Provide a fallback logger instance
+            self.logger = logging.getLogger(f"FallbackAgent.{config.name if hasattr(config, 'name') else 'Unknown'}")
+            self.logger.warning("Using fallback logger due to initialization error.")
         
         # Agent state
         self.state = AgentState()
@@ -84,13 +100,18 @@ class BaseAgent(ABC):
     async def initialize(self) -> None:
         """Initialize the agent"""
         await self.knowledge_base.register_agent(self.config.name)
+        # Removed misplaced import from here
+
         self.state.is_active = True
         self.state.last_activity = datetime.now()
+        self.state.status = "initializing" # Update status
         
         self.logger.info(f"Agent '{self.config.name}' initialized with ID {self.agent_id}")
+        DASHBOARD.log_agent_activity(self.config.name, "Agent initialized", {"agent_id": self.agent_id})
         
         # Agent-specific initialization
         await self._initialize_agent()
+        self.state.status = "idle" # After specific init, move to idle
     
     @abstractmethod
     async def _initialize_agent(self) -> None:
@@ -105,13 +126,16 @@ class BaseAgent(ABC):
         # Start background tasks
         self.tasks.append(asyncio.create_task(self._main_loop()))
         self.tasks.append(asyncio.create_task(self._communication_loop()))
-        self.tasks.append(asyncio.create_task(self._monitoring_loop()))
+        self.tasks.append(asyncio.create_task(self._monitoring_loop())) # Corrected typo
         
+        self.state.status = "running" # Update status
         self.logger.info(f"Agent '{self.config.name}' started")
+        DASHBOARD.log_agent_activity(self.config.name, "Agent started", {}) # Log start
     
     async def stop(self) -> None:
         """Stop the agent"""
         self.logger.info(f"Stopping agent '{self.config.name}'...")
+        DASHBOARD.log_agent_activity(self.config.name, "Agent stopping", {}) # Log stopping
         
         # Signal shutdown
         self.shutdown_event.set()
@@ -128,7 +152,9 @@ class BaseAgent(ABC):
         await self.knowledge_base.unregister_agent(self.config.name)
         
         self.state.is_active = False
+        self.state.status = "stopped" # Update status
         self.logger.info(f"Agent '{self.config.name}' stopped")
+        DASHBOARD.log_agent_activity(self.config.name, "Agent stopped", {}) # Log stopped
     
     async def _main_loop(self) -> None:
         """Main agent operation loop"""
