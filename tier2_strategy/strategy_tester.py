@@ -68,6 +68,7 @@ class StrategyPerformance:
     # Execution details
     backtest_duration: float
     test_timestamp: datetime
+    average_profit_per_trade: Optional[float] = None
     
     @classmethod
     def from_backtest_result(cls, strategy: GeneratedStrategy, result: BacktestResult, benchmark_return: float = 0.10) -> "StrategyPerformance":
@@ -85,6 +86,30 @@ class StrategyPerformance:
             total_trades = stats.get("TotalTrades", 0)
             win_rate = stats.get("WinRate", 0.0) / 100.0 if stats.get("WinRate") else 0.0
             
+            # Calculate average profit per trade
+            avg_profit_per_trade = 0.0
+            total_net_profit = stats.get("TotalNetProfit")
+
+            if total_net_profit is not None:
+                avg_profit_per_trade = total_net_profit / total_trades if total_trades > 0 else 0.0
+            else:
+                # Try to derive from other metrics if TotalNetProfit is not available
+                profit_loss_ratio = stats.get("ProfitLossRatio")
+                average_win = stats.get("AverageWin")
+                average_loss = stats.get("AverageLoss")
+
+                if profit_loss_ratio is not None and average_win is not None and \
+                   average_loss is not None and win_rate is not None and total_trades > 0:
+                    # Calculate total profit and total loss
+                    total_wins = win_rate * total_trades
+                    total_losses = (1 - win_rate) * total_trades
+                    total_profit_from_wins = total_wins * average_win
+                    total_loss_from_losses = total_losses * average_loss
+
+                    # Net profit = Total Profit from Wins - Total Loss from Losses
+                    derived_total_net_profit = total_profit_from_wins - total_loss_from_losses
+                    avg_profit_per_trade = derived_total_net_profit / total_trades
+
             # Risk-adjusted scoring
             risk_adjusted_score = cls._calculate_risk_adjusted_score(cagr, sharpe, drawdown)
             fitness_score = cls._calculate_fitness_score(cagr, sharpe, drawdown, volatility)
@@ -116,7 +141,8 @@ class StrategyPerformance:
                 risk_adjusted_score=risk_adjusted_score,
                 fitness_score=fitness_score,
                 backtest_duration=0.0,  # Set by caller
-                test_timestamp=datetime.now()
+                test_timestamp=datetime.now(),
+                average_profit_per_trade=avg_profit_per_trade
             )
             
         except Exception as e:
@@ -131,7 +157,7 @@ class StrategyPerformance:
                 profit_factor=0.0, calmar_ratio=0.0, information_ratio=0.0,
                 treynor_ratio=0.0, downside_deviation=0.0, excess_return=0.0,
                 tracking_error=0.0, risk_adjusted_score=0.0, fitness_score=0.0,
-                backtest_duration=0.0, test_timestamp=datetime.now()
+                backtest_duration=0.0, test_timestamp=datetime.now(), average_profit_per_trade=0.0
             )
     
     @staticmethod
@@ -612,7 +638,7 @@ class StrategyTester:
         try:
             # Create performance result dictionary for memory system
             performance_result = {
-                "backtest_id": performance.backtest_id,
+                "backtest_id": getattr(performance, 'backtest_id', 'N/A'), # Ensure backtest_id exists
                 "cagr": performance.cagr,
                 "sharpe_ratio": performance.sharpe_ratio,
                 "max_drawdown": performance.max_drawdown,
@@ -628,7 +654,8 @@ class StrategyTester:
                 "sortino_ratio": getattr(performance, 'sortino_ratio', 0.0),
                 "execution_time": performance.backtest_duration,
                 "fitness_score": performance.fitness_score,
-                "risk_adjusted_score": performance.risk_adjusted_score
+                "risk_adjusted_score": performance.risk_adjusted_score,
+                "average_profit_per_trade": performance.average_profit_per_trade
             }
             
             # Extract market conditions from current state

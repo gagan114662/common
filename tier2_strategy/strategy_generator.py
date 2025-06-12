@@ -21,6 +21,7 @@ import re
 from tier1_core.logger import get_logger, PERF_LOGGER
 from tier1_core.quantconnect_client import QuantConnectClient
 from tier1_core.real_time_dashboard import DASHBOARD
+from tier1_core.strategy_memory import get_strategy_memory # Added import
 from tier2_strategy.pattern_templates import get_pattern_recognition_template, get_smc_template
 
 @dataclass

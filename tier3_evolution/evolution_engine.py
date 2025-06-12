@@ -24,7 +24,7 @@ from tier2_strategy.strategy_generator import (
     ParameterRange
 )
 from tier2_strategy.strategy_tester import StrategyTester, StrategyPerformance
-from config.settings import EvolutionConfig
+from config.settings import EvolutionConfig, SYSTEM_CONFIG # Import SYSTEM_CONFIG
 
 @dataclass
 class Individual:
@@ -418,11 +418,90 @@ class EvolutionEngine:
             return mutated
         
         # Mutate each parameter with probability
-        for param in template.parameters:
-            if param.name in mutated and random.random() < 0.3:  # 30% chance per parameter
-                # Generate new value within constraints
-                mutated[param.name] = param.generate_value()
+        # First, try to get suggestions from memory system
+        # The get_optimization_suggestions returns a list of suggestions, each for a *set* of parameters.
+        # We are mutating a single individual's parameters here.
+        # We should pick one suggestion source (e.g. highest confidence or highest expected improvement)
+        # and apply its parameter changes.
+
+        # Probability of using memory-guided mutation vs random mutation
+        prob_use_memory_suggestion = 0.3 # Configurable: 30% chance to try memory-guided mutation
+
+        optimization_suggestions = self.generator.memory.get_optimization_suggestions(template_name, mutated)
+
+        # Filter suggestions by confidence and expected improvement
+        # This threshold could be dynamic or configurable
+        confident_suggestions = [
+            s for s in optimization_suggestions
+            if s['confidence'] > 0.5 and s['expected_improvement'] > 0.01
+        ]
         
+        applied_suggestion = False
+        if confident_suggestions and random.random() < prob_use_memory_suggestion:
+            # Sort by expected improvement or confidence
+            best_suggestion_set = sorted(confident_suggestions, key=lambda x: x['expected_improvement'], reverse=True)[0]
+
+            self.logger.debug(f"Attempting memory-guided mutation for template {template_name} from source {best_suggestion_set['source_strategy_id']}")
+
+            for param_name, change_info in best_suggestion_set['parameter_changes'].items():
+                if param_name in mutated:
+                    target_param_template = next((p for p in template.parameters if p.name == param_name), None)
+                    if target_param_template:
+                        suggested_value = change_info['suggested_value']
+                        # Ensure suggested value is within parameter range
+                        if target_param_template.param_type == "int":
+                            min_val = int(target_param_template.min_value)
+                            max_val = int(target_param_template.max_value)
+                            validated_value = max(min_val, min(max_val, int(suggested_value)))
+                        elif target_param_template.param_type == "float":
+                            min_val = float(target_param_template.min_value)
+                            max_val = float(target_param_template.max_value)
+                            validated_value = max(min_val, min(max_val, float(suggested_value)))
+                        else: # bool or other types might not have min/max in the same way
+                            validated_value = suggested_value
+
+                        mutated[param_name] = validated_value
+                        self.logger.debug(f"Memory-guided mutation for {param_name}: {change_info['current_value']} -> {validated_value} (suggested: {suggested_value})")
+                        applied_suggestion = True
+            if applied_suggestion:
+                 self.logger.info(f"Applied memory-guided mutation for an individual of template {template_name} using suggestions from {best_suggestion_set['source_strategy_id']}")
+
+
+        # Fallback to random mutation for parameters not touched by suggestions or if no suggestion was applied/chosen
+        # Each parameter still has a chance to be randomly mutated if not covered by a successful memory-guided mutation.
+        # The original mutation logic iterates through template.parameters.
+
+        # We need to decide if memory suggestion replaces the whole mutation pass or just for specific params.
+        # Let's assume if a suggestion set was applied, those params are "done".
+        # Other params still undergo random mutation chance.
+        # If no suggestion set was applied at all, all params undergo random mutation chance.
+
+        mutation_chance_per_param = 0.3 # Original random mutation chance for a parameter
+
+        for param_template in template.parameters:
+            param_name = param_template.name
+            if param_name in mutated:
+                # If memory-guided mutation was applied and it touched this parameter, maybe skip random mutation for it or reduce chance.
+                # For simplicity now: if memory-guided mutation was attempted and successfully applied *any* change,
+                # we could either skip random mutation entirely for this individual for this pass,
+                # or reduce random mutation chance for *other* params.
+                # Current logic: memory suggestions are applied, then random mutation applies to *all* params with some probability.
+                # This means a memory-suggested param could be immediately randomly mutated again. This might be undesirable.
+
+                # Refined logic:
+                # If 'applied_suggestion' is True AND param_name was part of that suggestion,
+                # then we skip random mutation for this param_name in this pass.
+                was_param_in_applied_suggestion = False
+                if applied_suggestion and best_suggestion_set and param_name in best_suggestion_set['parameter_changes']:
+                    was_param_in_applied_suggestion = True
+
+                if not was_param_in_applied_suggestion and random.random() < mutation_chance_per_param:
+                    # Generate new value within constraints (original random mutation)
+                    mutated[param_name] = param_template.generate_value()
+                    self.logger.debug(f"Random mutation for {param_name}: original_value -> {mutated[param_name]}")
+                elif was_param_in_applied_suggestion:
+                    self.logger.debug(f"Skipping random mutation for {param_name} as it was set by memory-guided suggestion.")
+
         return mutated
     
     async def _evaluate_population(self, individuals: List[Individual]) -> None:
@@ -484,19 +563,39 @@ class EvolutionEngine:
         # Emphasizes Sharpe ratio while considering CAGR and drawdown
         
         # Normalize metrics
-        cagr_score = min(performance.cagr / 0.25, 1.0)  # Target 25% CAGR
-        sharpe_score = min(performance.sharpe_ratio / 1.0, 1.0)  # Target 1.0 Sharpe
-        drawdown_penalty = max(0, (performance.max_drawdown - 0.15) / 0.15)  # Penalty for >15% drawdown
-        
-        # Calculate weighted fitness
+        cagr_score = min(performance.cagr / SYSTEM_CONFIG.performance.target_cagr, 1.0)
+        sharpe_score = min(performance.sharpe_ratio / SYSTEM_CONFIG.performance.target_sharpe, 1.0)
+        # Higher is better for drawdown penalty (less drawdown is better)
+        # (target_drawdown - actual_drawdown) / target_drawdown results in negative if actual > target
+        # So, 1 - (actual_drawdown / target_drawdown) might be more intuitive if target is max acceptable
+        # Let's keep the original logic: penalty increases as drawdown exceeds target
+        drawdown_score_component = max(0, (SYSTEM_CONFIG.performance.max_drawdown - performance.max_drawdown) / SYSTEM_CONFIG.performance.max_drawdown) # Higher is better if drawdown is lower
+
+        avg_profit_score = 0.0
+        if SYSTEM_CONFIG.performance.target_avg_profit_per_trade > 0: # Avoid division by zero if target is 0
+            avg_profit_score = min(
+                performance.average_profit_per_trade / SYSTEM_CONFIG.performance.target_avg_profit_per_trade,
+                1.0
+            )
+        avg_profit_score = max(0, avg_profit_score) # Ensure it's not negative if avg profit is negative
+
+        # Adjusted weights:
+        # CAGR: 0.25
+        # Sharpe: 0.35
+        # Drawdown: 0.25 (using drawdown_score_component, where higher is better)
+        # Avg Profit: 0.15
         fitness = (
-            cagr_score * 0.3 +
-            sharpe_score * 0.4 +
-            (1 - drawdown_penalty) * 0.3
+            cagr_score * 0.25 +
+            sharpe_score * 0.35 +
+            drawdown_score_component * 0.25 + # Use the component where higher is better
+            avg_profit_score * 0.15
         )
         
         # Bonus for exceeding targets
-        if performance.cagr >= 0.25 and performance.sharpe_ratio >= 1.0 and performance.max_drawdown <= 0.15:
+        if (performance.cagr >= SYSTEM_CONFIG.performance.target_cagr and
+            performance.sharpe_ratio >= SYSTEM_CONFIG.performance.target_sharpe and
+            performance.max_drawdown <= SYSTEM_CONFIG.performance.max_drawdown and
+            performance.average_profit_per_trade >= SYSTEM_CONFIG.performance.target_avg_profit_per_trade):
             fitness *= 1.2  # 20% bonus
         
         # Penalty for extreme values

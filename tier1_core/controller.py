@@ -277,21 +277,24 @@ class SystemController:
         
         # Initialize specialized trading agents
         self.trading_agents["trend_following"] = TrendFollowingAgent(
+            config=self.config.agents.trend_following,
+            knowledge_base=self.knowledge_base,
             strategy_generator=self.strategy_generator,
-            strategy_tester=self.strategy_tester,
-            knowledge_base=self.knowledge_base
+            strategy_tester=self.strategy_tester
         )
         
         self.trading_agents["mean_reversion"] = MeanReversionAgent(
+            config=self.config.agents.mean_reversion,
+            knowledge_base=self.knowledge_base,
             strategy_generator=self.strategy_generator,
-            strategy_tester=self.strategy_tester,
-            knowledge_base=self.knowledge_base
+            strategy_tester=self.strategy_tester
         )
         
         self.trading_agents["research_hypothesis"] = ResearchHypothesisAgent(
+            config=self.config.agents.research_hypothesis,
+            knowledge_base=self.knowledge_base,
             strategy_generator=self.strategy_generator,
-            strategy_tester=self.strategy_tester,
-            knowledge_base=self.knowledge_base
+            strategy_tester=self.strategy_tester
         )
         
         # Initialize all agents

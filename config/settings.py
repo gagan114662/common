@@ -33,6 +33,7 @@ class PerformanceTargets:
     max_drawdown: float = 0.15  # <15% maximum drawdown
     min_win_rate: float = 0.55  # 55% minimum win rate
     max_volatility: float = 0.20  # 20% maximum volatility
+    target_avg_profit_per_trade: float = 0.0075 # Target average profit per trade (e.g. 0.75% of capital)
 
 # System performance requirements  
 @dataclass

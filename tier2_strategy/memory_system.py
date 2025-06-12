@@ -252,6 +252,7 @@ class PerformanceWarehouse:
                 avg_win REAL,
                 avg_loss REAL,
                 trades_count INTEGER,
+                average_profit_per_trade REAL, # New column
                 start_date TIMESTAMP,
                 end_date TIMESTAMP,
                 backtest_timestamp TIMESTAMP
@@ -295,9 +296,9 @@ class PerformanceWarehouse:
             INSERT INTO backtest_results (
                 strategy_id, total_return, cagr, sharpe_ratio, sortino_ratio,
                 max_drawdown, volatility, var_95, beta, alpha, win_rate,
-                profit_factor, avg_win, avg_loss, trades_count,
+                profit_factor, avg_win, avg_loss, trades_count, average_profit_per_trade,
                 start_date, end_date, backtest_timestamp
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             strategy_id,
             results.get('total_return', 0),
@@ -314,6 +315,7 @@ class PerformanceWarehouse:
             results.get('avg_win', 0),
             results.get('avg_loss', 0),
             results.get('trades_count', 0),
+            results.get('average_profit_per_trade', 0.0), # New value
             results.get('start_date'),
             results.get('end_date'),
             datetime.now()
@@ -442,18 +444,31 @@ class IntelligentMemorySystem:
         high_performers = self._find_high_performing_strategies(template_name)
         
         for strategy_data in high_performers:
-            fingerprint = strategy_data['fingerprint']
-            performance = strategy_data['performance']
+            reference_fingerprint = strategy_data['fingerprint']
+            reference_performance = strategy_data['performance'] # This is a dict like {'sharpe_ratio': X, 'cagr': Y}
             
-            # Extract parameter suggestions
-            param_diff = self._compare_parameters(current_parameters, fingerprint.strategy_id)
+            # Get parameter suggestions by comparing current_parameters to this high-performer
+            # The method signature is _compare_parameters(self, current_params: Dict[str, Any], reference_strategy_id: str)
+            parameter_suggestions = self._compare_parameters(current_parameters, reference_fingerprint.strategy_id)
             
-            if param_diff:
+            if parameter_suggestions:
+                # Estimate improvement based on these suggested changes and the reference's performance
+                # The method signature is _estimate_improvement(self, param_changes: Dict[str, Any],
+                #                                            reference_performance: Dict[str, Any],
+                #                                            current_performance: Optional[Dict[str, Any]] = None)
+                # current_performance is not available here, which is fine.
+                estimated_improvement = self._estimate_improvement(parameter_suggestions, reference_performance)
+
+                # Calculate confidence for this set of suggestions
+                # strategy_data already contains fingerprint and performance of the reference strategy
+                confidence = self._calculate_suggestion_confidence(strategy_data)
+
                 suggestions.append({
-                    'parameter_changes': param_diff,
-                    'expected_improvement': self._estimate_improvement(param_diff, performance),
-                    'confidence': self._calculate_suggestion_confidence(strategy_data),
-                    'source_strategy': fingerprint.strategy_id
+                    'parameter_changes': parameter_suggestions, # Dict of suggested changes for multiple params
+                    'expected_improvement': estimated_improvement, # Single score for this set of changes
+                    'confidence': confidence,
+                    'source_strategy_id': reference_fingerprint.strategy_id,
+                    'source_strategy_performance': reference_performance
                 })
         
         # Sort by expected improvement
@@ -676,17 +691,130 @@ class IntelligentMemorySystem:
         
         return results
     
-    def _compare_parameters(self, current_params: Dict[str, Any], strategy_id: str) -> Dict[str, Any]:
-        """Compare parameters and suggest changes"""
-        # This would get stored parameters for the strategy and compare
-        # Simplified for now
-        return {}
+    def _compare_parameters(self, current_params: Dict[str, Any], reference_strategy_id: str) -> Dict[str, Any]:
+        """Compare parameters and suggest changes based on a reference strategy."""
+        suggested_changes = {}
+
+        # Retrieve the reference strategy's fingerprint
+        reference_fingerprint = self.vector_db.get_strategy_fingerprint(reference_strategy_id)
+        if not reference_fingerprint:
+            self.logger.warning(f"Could not find fingerprint for reference strategy ID: {reference_strategy_id}")
+            return {}
+
+        # Retrieve parameters of the reference strategy
+        # Option 1: From fingerprint's metadata if stored there (requires modification of StrategyFingerprint or how it's populated)
+        # Option 2: From knowledge_graph (current implementation stores parameters as JSON string)
+        cursor = self.knowledge_graph.conn.cursor()
+        cursor.execute("SELECT parameters, template_name FROM strategies WHERE strategy_id = ?", (reference_strategy_id,))
+        row = cursor.fetchone()
+        if not row:
+            self.logger.warning(f"Could not find parameters for reference strategy ID: {reference_strategy_id} in knowledge_graph")
+            return {}
+
+        try:
+            reference_params_json = row[0]
+            reference_params = json.loads(reference_params_json)
+            # reference_template_name = row[1] # Potentially useful for checking if param is applicable
+        except json.JSONDecodeError:
+            self.logger.error(f"Failed to decode parameters for reference strategy ID: {reference_strategy_id}")
+            return {}
+
+        # Identify differing or missing parameters
+        all_param_names = set(current_params.keys()) | set(reference_params.keys())
+
+        for param_name in all_param_names:
+            current_value = current_params.get(param_name)
+            reference_value = reference_params.get(param_name)
+
+            if param_name in reference_params and param_name not in current_params:
+                # Parameter in reference but not in current
+                suggested_changes[param_name] = {
+                    'suggested_value': reference_value,
+                    'current_value': None,
+                    'reason': f'present_in_high_performer ({reference_strategy_id})'
+                }
+            elif param_name in current_params and param_name not in reference_params:
+                # Parameter in current but not in reference (less common for suggestion, but noted)
+                # No direct suggestion, but could be logged or handled differently if needed.
+                pass
+            elif current_value != reference_value:
+                # Parameter present in both but different
+                suggested_changes[param_name] = {
+                    'suggested_value': reference_value,
+                    'current_value': current_value,
+                    'reason': f'value_differs_from_high_performer ({reference_strategy_id})'
+                }
+
+        return suggested_changes
     
-    def _estimate_improvement(self, param_changes: Dict[str, Any], reference_performance: Dict[str, Any]) -> float:
-        """Estimate performance improvement from parameter changes"""
-        # Simplified estimation - would use more sophisticated modeling
-        return reference_performance.get('sharpe_ratio', 0) * 0.1
-    
+    def _estimate_improvement(self,
+                              param_changes: Dict[str, Any],
+                              reference_performance: Dict[str, Any],
+                              current_performance: Optional[Dict[str, Any]] = None) -> float:
+        """Estimate performance improvement from parameter changes."""
+
+        # Heuristic 1: If reference performance is significantly better,
+        # estimate improvement as a fraction of the difference.
+        # This assumes param_changes are moving towards the reference_performance parameters.
+
+        # Primary metric to consider for "better" performance (e.g., Sharpe ratio or a fitness score)
+        primary_metric = 'sharpe_ratio' # Could be made configurable
+
+        ref_metric_value = reference_performance.get(primary_metric, 0.0)
+
+        current_metric_value = 0.0
+        if current_performance:
+            current_metric_value = current_performance.get(primary_metric, 0.0)
+
+        estimated_improvement_score = 0.0
+
+        # Number of parameters suggested to change
+        num_changed_params = len(param_changes)
+        if num_changed_params == 0:
+            return 0.0
+
+        if ref_metric_value > current_metric_value:
+            # Calculate the potential improvement based on the difference in performance.
+            # The factor (e.g., 0.25) represents a conservative estimate that adopting
+            # these parameters might yield a quarter of the observed performance difference.
+            # This factor could be adaptive or learned over time.
+            potential_gain = ref_metric_value - current_metric_value
+            estimated_improvement_score = potential_gain * 0.25
+
+            # Adjust based on the number of parameters changed;
+            # more changes might mean more uncertainty or more impact.
+            # This is a simple heuristic; more complex models could be used.
+            # For now, let's assume a slight decay if many params change, suggesting higher risk/uncertainty.
+            estimated_improvement_score /= (1 + 0.1 * (num_changed_params -1))
+
+        else:
+            # If reference performance is not better, or current_performance is not available,
+            # fall back to a very small positive nudge if any params are changed,
+            # or the old heuristic if it makes sense.
+            # The previous heuristic: reference_performance.get('sharpe_ratio', 0) * 0.1
+            # This might not be appropriate if we are not necessarily improving.
+            # Let's assign a small base improvement for any change towards a known good strategy.
+            estimated_improvement_score = ref_metric_value * 0.05 # Small fraction of reference's performance
+            estimated_improvement_score /= (1 + 0.1 * (num_changed_params -1))
+
+
+        # Placeholder for future enhancement: Query Knowledge Graph for historical impact
+        # This would involve:
+        # 1. Defining what a "similar parameter change" is.
+        # 2. Storing parameter change events and their outcomes (e.g., in a new table).
+        # 3. Querying this table for changes similar to `param_changes` for the given template/category.
+        # Example (conceptual):
+        # historical_impacts = self.knowledge_graph.query_historical_param_impact(
+        #    template_name=reference_fingerprint.template_name, # Need template context
+        #    param_changes=param_changes
+        # )
+        # if historical_impacts:
+        #     estimated_improvement_score = np.mean([impact['metric_change'] for impact in historical_impacts])
+
+        # Ensure a non-negative, small improvement if nothing else is derived.
+        # Max to avoid negative if ref_metric_value was somehow negative and current was positive.
+        return max(0.0, estimated_improvement_score)
+
     def _calculate_suggestion_confidence(self, strategy_data: Dict[str, Any]) -> float:
         """Calculate confidence in parameter suggestion"""
         similarity = strategy_data.get('similarity', 0)

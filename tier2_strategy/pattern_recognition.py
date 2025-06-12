@@ -66,31 +66,99 @@ class WyckoffPatternDetector(PatternDetector):
         # Calculate volume moving average
         data['volume_ma'] = data['volume'].rolling(20).mean()
         
-        # Identify potential accumulation zones
-        for i in range(50, len(data) - 10):
-            window = data.iloc[i-20:i+10]
+        # Identify potential accumulation/distribution phases and springs/upthrusts
+        # This is a simplified conceptual implementation. A full Wyckoff detector is complex.
+
+        rolling_window_size = 50 # For establishing trading range
+        spring_upthrust_check_window = 5 # Candles to check for recovery after break
+        volume_confirmation_period = 5 # Candles for volume check during spring/upthrust
+
+        for i in range(rolling_window_size, len(data) - spring_upthrust_check_window):
+            # Define the potential trading range (TR) window
+            tr_window = data.iloc[i - rolling_window_size : i]
+
+            tr_low = tr_window['low'].min()
+            tr_high = tr_window['high'].max()
+            tr_median_close = tr_window['close'].median()
             
-            # Check for sideways price action with increasing volume
-            price_range = (window['high'].max() - window['low'].min()) / window['close'].iloc[-1]
-            volume_increase = window['volume'].iloc[-10:].mean() / window['volume'].iloc[:10].mean()
+            # Sideways price action check
+            price_range_metric = (tr_high - tr_low) / tr_median_close if tr_median_close > 0 else 0
             
-            if price_range < 0.05 and volume_increase > self.volume_threshold:
-                # Potential accumulation
-                confidence = min(0.9, volume_increase / 3.0)
+            if not (0.02 < price_range_metric < 0.10): # Reasonable sideways range (2% to 10%)
+                continue
+
+            # Volume characteristics for the TR (e.g., diminishing or average)
+            avg_volume_in_tr = tr_window['volume'].mean()
+            if avg_volume_in_tr < data['volume_ma'].iloc[i-rolling_window_size:i].mean() * 0.7: # Volume drying up is a good sign for TR
+                pass # Or some other TR volume characteristic
+
+            # Check for Spring (potential accumulation)
+            # Price dips below TR low then recovers
+            current_candle = data.iloc[i]
+            if current_candle['low'] < tr_low:
+                # Check for recovery in the next few candles
+                recovered = False
+                increased_volume_on_spring = False
+                for j in range(1, spring_upthrust_check_window + 1):
+                    if i + j >= len(data): break
+                    recovery_candle = data.iloc[i+j]
+                    if recovery_candle['close'] > tr_low: # Recovered into the range
+                        recovered = True
+                        # Check volume on the spring/recovery candles
+                        spring_volume_window = data.iloc[i : i+j+1]
+                        if spring_volume_window['volume'].mean() > data['volume_ma'].iloc[i] * self.volume_threshold:
+                            increased_volume_on_spring = True
+                        break
                 
-                signals.append(PatternSignal(
-                    pattern_type="wyckoff_accumulation",
-                    confidence=confidence,
-                    entry_price=data['close'].iloc[i],
-                    stop_loss=window['low'].min() * 0.98,
-                    take_profit=data['close'].iloc[i] * 1.15,
-                    pattern_data={
-                        'volume_increase': volume_increase,
-                        'price_range': price_range,
-                        'poc_price': window['close'].median()
-                    },
-                    timestamp=data.index[i]
-                ))
+                if recovered and increased_volume_on_spring:
+                    confidence = 0.75 # Base confidence for spring
+                    signals.append(PatternSignal(
+                        pattern_type="wyckoff_spring_accumulation",
+                        confidence=confidence,
+                        entry_price=current_candle['close'], # Entry on confirmation of recovery
+                        stop_loss=current_candle['low'] * 0.99, # Below the spring low
+                        take_profit=current_candle['close'] * (1 + price_range_metric * 2), # Target based on TR height
+                        pattern_data={
+                            'trading_range_low': tr_low,
+                            'trading_range_high': tr_high,
+                            'spring_low': current_candle['low'],
+                            'volume_increase_ratio': data.iloc[i:i+spring_upthrust_check_window]['volume'].mean() / avg_volume_in_tr if avg_volume_in_tr else 0,
+                        },
+                        timestamp=data.index[i+j] if 'j' in locals() and i+j < len(data) else data.index[i]
+                    ))
+
+            # Check for Upthrust (potential distribution)
+            # Price pushes above TR high then rejects
+            if current_candle['high'] > tr_high:
+                rejected = False
+                increased_volume_on_upthrust = False
+                for j in range(1, spring_upthrust_check_window + 1):
+                    if i + j >= len(data): break
+                    rejection_candle = data.iloc[i+j]
+                    if rejection_candle['close'] < tr_high: # Rejected back into the range
+                        rejected = True
+                         # Check volume on the upthrust/rejection candles
+                        upthrust_volume_window = data.iloc[i : i+j+1]
+                        if upthrust_volume_window['volume'].mean() > data['volume_ma'].iloc[i] * self.volume_threshold:
+                            increased_volume_on_upthrust = True
+                        break
+
+                if rejected and increased_volume_on_upthrust:
+                    confidence = 0.75 # Base confidence for upthrust
+                    signals.append(PatternSignal(
+                        pattern_type="wyckoff_upthrust_distribution",
+                        confidence=confidence,
+                        entry_price=current_candle['close'], # Entry on confirmation of rejection
+                        stop_loss=current_candle['high'] * 1.01, # Above the upthrust high
+                        take_profit=current_candle['close'] * (1 - price_range_metric * 2),
+                        pattern_data={
+                            'trading_range_low': tr_low,
+                            'trading_range_high': tr_high,
+                            'upthrust_high': current_candle['high'],
+                            'volume_increase_ratio': data.iloc[i:i+spring_upthrust_check_window]['volume'].mean() / avg_volume_in_tr if avg_volume_in_tr else 0,
+                        },
+                        timestamp=data.index[i+j] if 'j' in locals() and i+j < len(data) else data.index[i]
+                    ))
         
         return signals
     
@@ -135,21 +203,56 @@ class SmartMoneyConceptDetector(PatternDetector):
         signals = []
         
         # Bullish BOS - price breaks above previous swing high
+        avg_volume_period = 20 # Look back period for average volume calculation
+        if 'volume' not in data.columns: # Ensure volume data is present
+            return signals
+        data['volume_ma_short'] = data['volume'].rolling(window=avg_volume_period).mean()
+
         for i, high_idx in enumerate(swing_highs[1:], 1):
-            prev_high = data['high'].iloc[swing_highs[i-1]]
-            current_high = data['high'].iloc[high_idx]
+            prev_high_idx = swing_highs[i-1]
+            prev_high_val = data['high'].iloc[prev_high_idx]
             
-            if current_high > prev_high * 1.001:  # 0.1% buffer
-                signals.append(PatternSignal(
-                    pattern_type="smc_bullish_bos",
-                    confidence=0.75,
-                    entry_price=current_high,
-                    stop_loss=data['low'].iloc[max(0, high_idx-10):high_idx].min(),
-                    take_profit=current_high * 1.08,
-                    pattern_data={'previous_high': prev_high},
-                    timestamp=data.index[high_idx]
-                ))
-        
+            # Ensure high_idx is a valid index for current_candle related operations
+            if high_idx >= len(data): continue
+            current_candle = data.iloc[high_idx]
+            current_high_val = current_candle['high']
+
+            if current_high_val > prev_high_val * 1.001:  # 0.1% buffer for BOS
+                # Volume confirmation for BOS
+                # Check volume of the candle that broke the structure
+                bos_candle_volume = current_candle['volume']
+                avg_volume_before_bos = data['volume_ma_short'].iloc[max(0, high_idx-1)] # Avg volume just before BOS
+
+                volume_confirmed = False
+                if avg_volume_before_bos > 0 and bos_candle_volume > avg_volume_before_bos * 1.5: # e.g., 50% higher
+                    volume_confirmed = True
+
+                if volume_confirmed:
+                    signals.append(PatternSignal(
+                        pattern_type="smc_bullish_bos_vol_confirmed",
+                        confidence=0.85, # Higher confidence due to volume confirmation
+                        entry_price=current_high_val,
+                        stop_loss=data['low'].iloc[max(0, high_idx-10):high_idx].min(), # Or related swing low
+                        take_profit=current_high_val * 1.08, # Example take profit
+                        pattern_data={
+                            'previous_high': prev_high_val,
+                            'bos_candle_volume': bos_candle_volume,
+                            'avg_volume_before_bos': avg_volume_before_bos
+                        },
+                        timestamp=data.index[high_idx]
+                    ))
+                else: # BOS without strong volume confirmation (lower confidence)
+                    signals.append(PatternSignal(
+                        pattern_type="smc_bullish_bos",
+                        confidence=0.65,
+                        entry_price=current_high_val,
+                        stop_loss=data['low'].iloc[max(0, high_idx-10):high_idx].min(),
+                        take_profit=current_high_val * 1.08,
+                        pattern_data={'previous_high': prev_high_val, 'volume_confirmed': False},
+                        timestamp=data.index[high_idx]
+                    ))
+
+        # Bearish BOS would be similar, checking breaks of swing_lows downwards. (Not implemented here for brevity)
         return signals
     
     def _detect_fair_value_gaps(self, data: pd.DataFrame) -> List[PatternSignal]:
@@ -158,26 +261,53 @@ class SmartMoneyConceptDetector(PatternDetector):
         
         for i in range(2, len(data)):
             # Bullish FVG: gap between candle 1 high and candle 3 low
-            candle1_high = data['high'].iloc[i-2]
-            candle3_low = data['low'].iloc[i]
+            candle1 = data.iloc[i-2]
+            candle2 = data.iloc[i-1] # The middle candle, potentially high momentum
+            candle3 = data.iloc[i]
             
-            if candle3_low > candle1_high:
-                gap_size = (candle3_low - candle1_high) / data['close'].iloc[i]
-                
-                if gap_size > 0.002:  # Minimum 0.2% gap
+            # Bullish FVG: gap between candle 1 high and candle 3 low
+            if candle3['low'] > candle1['high']:
+                gap_size_abs = candle3['low'] - candle1['high']
+                gap_size_rel = gap_size_abs / candle2['close'] if candle2['close'] > 0 else 0
+
+                if gap_size_rel > 0.002:  # Minimum 0.2% relative gap size
+
+                    # Check middle candle (candle2) momentum and volume
+                    candle2_body = abs(candle2['close'] - candle2['open'])
+                    candle2_range = candle2['high'] - candle2['low']
+                    is_candle2_high_momentum = (candle2_body / candle2_range > 0.7) if candle2_range > 0 else False
+
+                    # Check volume of candle2 (assuming 'volume_ma_short' is available or calculate it)
+                    if 'volume_ma_short' not in data.columns:
+                         data['volume_ma_short'] = data['volume'].rolling(window=20).mean() # Ensure it's present
+
+                    is_candle2_volume_notable = candle2['volume'] > data['volume_ma_short'].iloc[i-1] * 1.2 # e.g. 20% above avg
+
+                    confidence = min(0.7, gap_size_rel * 100) # Base confidence
+                    pattern_type = "smc_bullish_fvg"
+
+                    if is_candle2_high_momentum and is_candle2_volume_notable:
+                        confidence = min(0.85, confidence * 1.2) # Boost confidence
+                        pattern_type = "smc_bullish_fvg_strong_impulse"
+
                     signals.append(PatternSignal(
-                        pattern_type="smc_bullish_fvg",
-                        confidence=min(0.8, gap_size * 100),
-                        entry_price=candle1_high,
-                        take_profit=candle3_low,
+                        pattern_type=pattern_type,
+                        confidence=confidence,
+                        entry_price=candle1['high'], # Entry at the start of the gap
+                        stop_loss=candle1['low'] * 0.995, # Example SL below candle1 low
+                        take_profit=candle3['low'], # Target filling the gap
                         pattern_data={
-                            'gap_size': gap_size,
-                            'fvg_high': candle3_low,
-                            'fvg_low': candle1_high
+                            'gap_size_abs': gap_size_abs,
+                            'gap_size_rel': gap_size_rel,
+                            'fvg_high': candle3['low'],
+                            'fvg_low': candle1['high'],
+                            'middle_candle_momentum': is_candle2_high_momentum,
+                            'middle_candle_volume_notable': is_candle2_volume_notable,
                         },
                         timestamp=data.index[i]
                     ))
         
+        # Bearish FVG: gap between candle 1 low and candle 3 high (not implemented for brevity)
         return signals
     
     def _detect_order_blocks(self, data: pd.DataFrame, swing_highs: List[int], swing_lows: List[int]) -> List[PatternSignal]:

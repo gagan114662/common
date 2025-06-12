@@ -56,31 +56,34 @@ class MeanReversionAgent(BaseAgent):
         self.logger.info(f"{self.config.name} initialized with watchlist: {self.symbols_watchlist}")
 
     async def _initialize_agent(self) -> None:
-        self.logger.info(f"{self.name} specific initialization complete.")
+        # self.config refers to the MeanReversionAgentSettings instance, which has a 'name' attribute.
+        self.logger.info(f"{self.config.name} specific initialization complete.")
         DASHBOARD.log_agent_activity(
-            self.name,
+            self.config.name,
             "Agent specific initialization complete", # Matches test string
             {"initial_symbols": self.symbols_watchlist}
         )
 
     async def _fetch_market_data(self, symbol: str) -> Optional[pd.DataFrame]:
+        # self.config is MeanReversionAgentSettings. Its 'name' attribute is correct for logging.
+        # The BaseAgent's logger (self.logger) is already configured with this name via BaseAgentConfig.
         self.logger.debug(f"Fetching market data for {symbol} over period {self.config.data_fetch_period}")
         try:
             ticker = yf.Ticker(symbol)
             data = ticker.history(period=self.config.data_fetch_period)
             if data.empty:
                 self.logger.warning(f"No data returned for {symbol}")
-                DASHBOARD.log_agent_activity(self.name, f"No data for {symbol}", {"symbol": symbol})
+                DASHBOARD.log_agent_activity(self.config.name, f"No data for {symbol}", {"symbol": symbol})
                 return None
             required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
             if not all(col in data.columns for col in required_cols):
                 self.logger.warning(f"Data for {symbol} missing one of {required_cols}.")
-                DASHBOARD.log_agent_activity(self.name, f"Data for {symbol} missing columns", {"symbol": symbol})
+                DASHBOARD.log_agent_activity(self.config.name, f"Data for {symbol} missing columns", {"symbol": symbol})
                 return None
             return data
         except Exception as e:
             self.logger.error(f"Error fetching data for {symbol}: {str(e)}")
-            DASHBOARD.log_agent_activity(self.config.name, f"Error fetching data for {symbol}: {str(e)}", {"symbol": symbol}) # Use self.config.name
+            DASHBOARD.log_agent_activity(self.config.name, f"Error fetching data for {symbol}: {str(e)}", {"symbol": symbol})
             return None
 
     def _calculate_indicators(self, data: pd.DataFrame, symbol: str) -> Optional[pd.DataFrame]:
