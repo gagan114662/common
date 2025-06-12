@@ -20,7 +20,7 @@ import statistics
 from tier1_core.logger import get_logger, PERF_LOGGER
 from tier1_core.quantconnect_client import QuantConnectClient, BacktestResult
 from tier2_strategy.strategy_generator import GeneratedStrategy
-from config.settings import BacktestConfig, PerformanceTargets
+from config.settings import BacktestConfig, PerformanceTargets, SYSTEM_CONFIG
 from tier1_core.real_time_dashboard import DASHBOARD
 from tier1_core.strategy_memory import get_strategy_memory
 
@@ -68,21 +68,26 @@ class StrategyPerformance:
     # Execution details
     backtest_duration: float
     test_timestamp: datetime
+    average_profit_per_trade: float
     
     @classmethod
     def from_backtest_result(cls, strategy: GeneratedStrategy, result: BacktestResult, benchmark_return: float = 0.10) -> "StrategyPerformance":
         """Create performance metrics from backtest result"""
         try:
             stats = result.statistics.get("TotalPerformance", {}) if result.statistics else {}
+            risk_free_rate = SYSTEM_CONFIG.performance.risk_free_rate
             
             # Extract basic metrics
             cagr = stats.get("CompoundAnnualReturn", 0.0)
-            sharpe = stats.get("SharpeRatio", 0.0)
+            volatility = stats.get("TotalPerformance", {}).get("StandardDeviation", 0.0) # Ensure volatility is defined before sharpe
+            sharpe = (cagr - risk_free_rate) / volatility if volatility > 0 else 0.0
             drawdown = abs(stats.get("Drawdown", 1.0))
-            volatility = stats.get("TotalPerformance", {}).get("StandardDeviation", 0.0)
             
             # Calculate additional metrics
             total_trades = stats.get("TotalTrades", 0)
+            portfolio_stats = stats.get("PortfolioStatistics", {})
+            total_net_profit = portfolio_stats.get("TotalNetProfit", 0.0)
+            avg_profit_trade = total_net_profit / total_trades if total_trades > 0 else 0.0
             win_rate = stats.get("WinRate", 0.0) / 100.0 if stats.get("WinRate") else 0.0
             
             # Risk-adjusted scoring
@@ -116,7 +121,8 @@ class StrategyPerformance:
                 risk_adjusted_score=risk_adjusted_score,
                 fitness_score=fitness_score,
                 backtest_duration=0.0,  # Set by caller
-                test_timestamp=datetime.now()
+                test_timestamp=datetime.now(),
+                average_profit_per_trade=avg_profit_trade
             )
             
         except Exception as e:
@@ -131,7 +137,8 @@ class StrategyPerformance:
                 profit_factor=0.0, calmar_ratio=0.0, information_ratio=0.0,
                 treynor_ratio=0.0, downside_deviation=0.0, excess_return=0.0,
                 tracking_error=0.0, risk_adjusted_score=0.0, fitness_score=0.0,
-                backtest_duration=0.0, test_timestamp=datetime.now()
+                backtest_duration=0.0, test_timestamp=datetime.now(),
+                average_profit_per_trade=0.0
             )
     
     @staticmethod
@@ -162,7 +169,8 @@ class StrategyPerformance:
             self.cagr >= targets.target_cagr and
             self.sharpe_ratio >= targets.target_sharpe and
             self.max_drawdown <= targets.max_drawdown and
-            self.win_rate >= targets.min_win_rate
+            self.win_rate >= targets.min_win_rate and
+            self.average_profit_per_trade >= targets.target_average_profit_per_trade
         )
     
     def to_dict(self) -> Dict[str, Any]:
