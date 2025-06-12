@@ -24,7 +24,7 @@ from tier2_strategy.strategy_generator import (
     ParameterRange
 )
 from tier2_strategy.strategy_tester import StrategyTester, StrategyPerformance
-from config.settings import EvolutionConfig
+from config.settings import EvolutionConfig, SYSTEM_CONFIG
 
 @dataclass
 class Individual:
@@ -480,31 +480,42 @@ class EvolutionEngine:
     
     def _calculate_fitness(self, performance: StrategyPerformance) -> float:
         """Calculate multi-objective fitness score"""
-        # Multi-objective fitness function
-        # Emphasizes Sharpe ratio while considering CAGR and drawdown
-        
+        targets = SYSTEM_CONFIG.performance
+        target_cagr = targets.target_cagr
+        target_sharpe = targets.target_sharpe
+        target_max_drawdown = targets.max_drawdown  # This will be 0.20
+        target_avg_profit_trade = targets.target_average_profit_per_trade # This will be 0.0075
+        # performance.sharpe_ratio is already calculated with the correct risk_free_rate
+
         # Normalize metrics
-        cagr_score = min(performance.cagr / 0.25, 1.0)  # Target 25% CAGR
-        sharpe_score = min(performance.sharpe_ratio / 1.0, 1.0)  # Target 1.0 Sharpe
-        drawdown_penalty = max(0, (performance.max_drawdown - 0.15) / 0.15)  # Penalty for >15% drawdown
-        
+        cagr_score = min(performance.cagr / target_cagr, 1.0) if target_cagr > 0 else 0.0
+        sharpe_score = min(performance.sharpe_ratio / target_sharpe, 1.0) if target_sharpe > 0 else 0.0
+        # The StrategyPerformance object now has average_profit_per_trade
+        avg_profit_score = min(performance.average_profit_per_trade / target_avg_profit_trade, 1.0) if target_avg_profit_trade > 0 else 0.0
+        # Drawdown score: 1.0 for zero drawdown, 0.0 if drawdown hits target_max_drawdown or worse.
+        drawdown_score = max(0.0, (target_max_drawdown - performance.max_drawdown) / target_max_drawdown) if target_max_drawdown > 0 else 0.0
+
         # Calculate weighted fitness
         fitness = (
-            cagr_score * 0.3 +
-            sharpe_score * 0.4 +
-            (1 - drawdown_penalty) * 0.3
+            cagr_score * 0.20 +
+            sharpe_score * 0.30 +
+            avg_profit_score * 0.30 +
+            drawdown_score * 0.20
         )
-        
+
         # Bonus for exceeding targets
-        if performance.cagr >= 0.25 and performance.sharpe_ratio >= 1.0 and performance.max_drawdown <= 0.15:
+        if (performance.cagr >= target_cagr and
+            performance.sharpe_ratio >= target_sharpe and
+            performance.max_drawdown <= target_max_drawdown and
+            performance.average_profit_per_trade >= target_avg_profit_trade):
             fitness *= 1.2  # 20% bonus
-        
-        # Penalty for extreme values
-        if performance.max_drawdown > 0.30:
+
+        # Penalty for very high drawdown
+        if performance.max_drawdown > 0.30: # This is an absolute threshold, more severe than target_max_drawdown
             fitness *= 0.5  # 50% penalty
-        
-        return max(0, fitness)
-    
+
+        return max(0.0, fitness)
+
     def _select_next_generation(self, all_individuals: List[Individual]) -> List[Individual]:
         """Select next generation with elitism"""
         # Sort by fitness

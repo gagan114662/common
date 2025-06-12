@@ -11,6 +11,7 @@ from tier2_strategy.strategy_tester import StrategyTester
 from tier3_evolution.evolution_engine import EvolutionEngine
 from tier1_core.performance_monitor import PerformanceMonitor
 from agents.base_agent import AgentConfig # For mock agents
+from config.settings import PerformanceTargets # Added for the new test
 
 class TestSupervisorAgent(unittest.IsolatedAsyncioTestCase):
 
@@ -221,6 +222,66 @@ class TestSupervisorAgent(unittest.IsolatedAsyncioTestCase):
         self.assertIn('category', status)
         # self.assertIn('state', status) # 'state' key is not in BaseAgent.get_status()
                                         # It returns discrete state values.
+
+    async def test_supervisor_check_performance_targets(self):
+        # Define performance targets for the test
+        test_targets = PerformanceTargets(
+            target_cagr=0.20,
+            target_sharpe=1.0,
+            max_drawdown=0.15,
+            min_win_rate=0.55, # Though not directly used by _check_performance_targets itself
+            target_average_profit_per_trade=0.0050 # 0.5%
+        )
+        self.supervisor.performance_targets = test_targets
+        self.supervisor.targets_achieved = False # Ensure initial state
+
+        # Scenario 1: All targets met
+        self.supervisor.best_system_performance = {
+            'cagr': 0.25,
+            'sharpe': 1.2,
+            'drawdown': 0.10,
+            'average_profit_per_trade': 0.0060
+        }
+        # Mock logger to check output
+        with self.assertLogs(self.supervisor.logger, level='INFO') as cm:
+            await self.supervisor._check_performance_targets()
+
+        self.assertTrue(self.supervisor.targets_achieved)
+        self.assertTrue(any("PERFORMANCE TARGETS ACHIEVED!" in message for message in cm.output))
+        self.assertTrue(any(f"AvgProfit/Trade: {0.0060:.4f}" in message for message in cm.output))
+
+        # Scenario 2: One target (average_profit_per_trade) not met
+        self.supervisor.targets_achieved = False # Reset for next scenario
+        self.supervisor.best_system_performance = {
+            'cagr': 0.25,
+            'sharpe': 1.2,
+            'drawdown': 0.10,
+            'average_profit_per_trade': 0.0040 # Fails here
+        }
+        await self.supervisor._check_performance_targets()
+        self.assertFalse(self.supervisor.targets_achieved)
+
+        # Scenario 3: Another target (e.g., cagr) not met
+        self.supervisor.targets_achieved = False # Reset
+        self.supervisor.best_system_performance = {
+            'cagr': 0.15, # Fails here
+            'sharpe': 1.2,
+            'drawdown': 0.10,
+            'average_profit_per_trade': 0.0060
+        }
+        await self.supervisor._check_performance_targets()
+        self.assertFalse(self.supervisor.targets_achieved)
+
+        # Scenario 4: Drawdown target not met (higher drawdown is worse)
+        self.supervisor.targets_achieved = False # Reset
+        self.supervisor.best_system_performance = {
+            'cagr': 0.25,
+            'sharpe': 1.2,
+            'drawdown': 0.20, # Fails here (0.20 > 0.15)
+            'average_profit_per_trade': 0.0060
+        }
+        await self.supervisor._check_performance_targets()
+        self.assertFalse(self.supervisor.targets_achieved)
 
 if __name__ == '__main__':
     unittest.main()

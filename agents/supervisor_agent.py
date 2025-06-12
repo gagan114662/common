@@ -99,7 +99,8 @@ class SupervisorAgent(BaseAgent):
         self.best_system_performance = {
             'cagr': 0.0,
             'sharpe': 0.0,
-            'drawdown': 1.0
+            'drawdown': 1.0,
+            'average_profit_per_trade': 0.0
         }
         
         # Coordination state
@@ -201,6 +202,9 @@ class SupervisorAgent(BaseAgent):
                 
             if trading_metrics.get('best_drawdown', 1) < self.best_system_performance['drawdown']:
                 self.best_system_performance['drawdown'] = trading_metrics['best_drawdown']
+
+            if trading_metrics.get('best_average_profit_per_trade', 0.0) > self.best_system_performance.get('average_profit_per_trade', 0.0):
+                self.best_system_performance['average_profit_per_trade'] = trading_metrics['best_average_profit_per_trade']
         
         # Detect market regime
         await self._detect_market_regime()
@@ -210,7 +214,8 @@ class SupervisorAgent(BaseAgent):
             self.logger.info(
                 f"System Performance - CAGR: {self.best_system_performance['cagr']:.2%}, "
                 f"Sharpe: {self.best_system_performance['sharpe']:.2f}, "
-                f"Drawdown: {self.best_system_performance['drawdown']:.2%}"
+                f"Drawdown: {self.best_system_performance['drawdown']:.2%}, "
+                f"AvgProfit/Trade: {self.best_system_performance.get('average_profit_per_trade', 0.0):.4f}"
             )
     
     async def _analyze_agent_performance(self) -> None:
@@ -337,7 +342,8 @@ class SupervisorAgent(BaseAgent):
         targets_met = (
             current_performance['cagr'] >= self.performance_targets.target_cagr and
             current_performance['sharpe'] >= self.performance_targets.target_sharpe and
-            current_performance['drawdown'] <= self.performance_targets.max_drawdown
+            current_performance['drawdown'] <= self.performance_targets.max_drawdown and
+            current_performance.get('average_profit_per_trade', 0.0) >= self.performance_targets.target_average_profit_per_trade
         )
         
         if targets_met and not self.targets_achieved:
@@ -351,6 +357,9 @@ class SupervisorAgent(BaseAgent):
             )
             self.logger.info(
                 f"Drawdown: {current_performance['drawdown']:.2%} (target: {self.performance_targets.max_drawdown:.2%})"
+            )
+            self.logger.info(
+                f"AvgProfit/Trade: {current_performance.get('average_profit_per_trade', 0.0):.4f} (target: {self.performance_targets.target_average_profit_per_trade:.4f})"
             )
             
             # Notify all agents

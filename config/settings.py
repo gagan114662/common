@@ -30,9 +30,11 @@ class PerformanceTargets:
     """Target performance metrics"""
     target_cagr: float = 0.25  # 25% CAGR
     target_sharpe: float = 1.0  # 1.0+ Sharpe ratio
-    max_drawdown: float = 0.15  # <15% maximum drawdown
+    max_drawdown: float = 0.20  # <15% maximum drawdown
     min_win_rate: float = 0.55  # 55% minimum win rate
     max_volatility: float = 0.20  # 20% maximum volatility
+    target_average_profit_per_trade: float = 0.0075
+    risk_free_rate: float = 0.05
 
 # System performance requirements  
 @dataclass

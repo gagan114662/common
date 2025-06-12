@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 import logging
+from config.settings import SYSTEM_CONFIG
 from pathlib import Path
 import json
 
@@ -28,6 +29,7 @@ class PerformanceMetrics:
     beta: float
     alpha: float
     calmar_ratio: float
+    average_profit_per_trade: float
     
 @dataclass
 class AttributionReport:
@@ -181,8 +183,9 @@ class RealTimePerformanceMonitor:
             cagr = 0
             
         # Risk metrics
+        risk_free_rate = SYSTEM_CONFIG.performance.risk_free_rate
         volatility = np.std(returns_array) * np.sqrt(252) if len(returns_array) > 1 else 0
-        sharpe_ratio = (cagr - 0.02) / volatility if volatility > 0 else 0  # Assuming 2% risk-free rate
+        sharpe_ratio = (cagr - risk_free_rate) / volatility if volatility > 0 else 0.0
         
         # Downside metrics
         negative_returns = returns_array[returns_array < 0]
@@ -220,6 +223,11 @@ class RealTimePerformanceMonitor:
         
         # Calmar ratio
         calmar_ratio = cagr / abs(max_drawdown) if max_drawdown != 0 else 0
+
+        # Placeholder for average_profit_per_trade
+        avg_profit_trade = 0.0 # Placeholder
+        if 'total_net_profit_from_trades' in portfolio_data and 'number_of_trades' in portfolio_data and portfolio_data['number_of_trades'] > 0:
+            avg_profit_trade = portfolio_data['total_net_profit_from_trades'] / portfolio_data['number_of_trades']
         
         return PerformanceMetrics(
             timestamp=datetime.now(),
@@ -234,7 +242,8 @@ class RealTimePerformanceMonitor:
             var_95=var_95,
             beta=beta,
             alpha=alpha,
-            calmar_ratio=calmar_ratio
+            calmar_ratio=calmar_ratio,
+            average_profit_per_trade=avg_profit_trade
         )
     
     def _calculate_pattern_contribution(self, strategy_performance: Dict[str, Any]) -> float:
